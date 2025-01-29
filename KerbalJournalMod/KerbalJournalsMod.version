@@ -1,15 +1,15 @@
 {
   "NAME": KerbalJournalMod
-  "URL": "hhttps://github.com/iLikeGothMommys/KerbalAgeMod/blob/main/KerbalAgingMod/KerbalAgingMod.version",
-  "DOWNLOAD": "https://github.com/iLikeGothMommys/KerbalAgeMod/releases",
+  "URL": "https://github.com/iLikeGothMommys/KerbalJournalMod/blob/main/KerbalJournalMod/KerbalJournalsMod.version",
+  "DOWNLOAD": "https://github.com/iLikeGothMommys/KerbalJournalMod/releases",
   "GITHUB": {
     "USERNAME": "iLikeGothMommys",
-    "REPOSITORY": "KerbalsGetOld"
+    "REPOSITORY": "KerbalJournalMod"
   },
   "VERSION": {
     "MAJOR": 1,
     "MINOR": 0,
-    "PATCH": 1,
+    "PATCH": 0,
     "BUILD": 1
   },
   "KSP_VERSION_MIN": {
