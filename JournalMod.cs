@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -160,13 +160,9 @@ namespace KerbalJournal
     }
 
     /// <summary>
-    /// Main UI code with hooking into SpaceCenter on load:
-    /// The KSPAddon attribute ensures it runs in both Flight and SpaceCenter,
-    /// and "true" means it persists across scene changes.
-    /// We attach a handler to onGUIApplicationLauncherReady so the button
-    /// appears as soon as the SpaceCenter is loaded.
+    /// Main UI code with hooking into SpaceCenter on load.
     /// </summary>
-    [KSPAddon(KSPAddon.Startup.Flight | KSPAddon.Startup.SpaceCentre, true)]
+    [KSPAddon(KSPAddon.Startup.SpaceCentre, true)]
     public class JournalUI : MonoBehaviour
     {
         public static JournalUI Instance;
@@ -237,14 +233,26 @@ namespace KerbalJournal
             Instance = this;
             DontDestroyOnLoad(this);
 
-            // Hook into onGUIApplicationLauncherReady so the button is ready in SpaceCenter
+            // Hook into onGUIApplicationLauncherReady
             GameEvents.onGUIApplicationLauncherReady.Add(InitializeAppLauncherButton);
+
+            // Also hook into scene changes to ensure button persists
+            GameEvents.onGameSceneLoadRequested.Add(OnGameSceneLoadRequested);
+        }
+
+        public void Start()
+        {
+            // Try to initialize button immediately if launcher exists
+            if (ApplicationLauncher.Ready)
+            {
+                InitializeAppLauncherButton();
+            }
         }
 
         public void OnDestroy()
         {
-            // Unhook the event
             GameEvents.onGUIApplicationLauncherReady.Remove(InitializeAppLauncherButton);
+            GameEvents.onGameSceneLoadRequested.Remove(OnGameSceneLoadRequested);
 
             if (appLauncherButton != null)
             {
@@ -254,31 +262,40 @@ namespace KerbalJournal
             Instance = null;
         }
 
+        private void OnGameSceneLoadRequested(GameScenes scene)
+        {
+            // If we're changing scenes and our button is gone, try to recreate it
+            if (appLauncherButton == null && ApplicationLauncher.Ready)
+            {
+                InitializeAppLauncherButton();
+            }
+        }
+
         /// <summary>
         /// This is called once the game has an AppLauncher ready (SpaceCenter/Flight).
         /// </summary>
         private void InitializeAppLauncherButton()
         {
-            if (appLauncherButton == null && ApplicationLauncher.Instance != null)
-            {
-                // Ensure we have a valid texture
-                if (btnTexture == null)
-                {
-                    btnTexture = GameDatabase.Instance.GetTexture(
-                        "KerbalJournalMod/Icons/Journal", false);
-                }
+            if (appLauncherButton != null || ApplicationLauncher.Instance == null)
+                return;
 
-                appLauncherButton = ApplicationLauncher.Instance.AddModApplication(
-                    onTrue: ShowWindow,
-                    onFalse: HideWindow,
-                    onHover: null,
-                    onHoverOut: null,
-                    onEnable: null,
-                    onDisable: null,
-                    visibleInScenes: ApplicationLauncher.AppScenes.FLIGHT | ApplicationLauncher.AppScenes.SPACECENTER,
-                    texture: btnTexture
-                );
+            // Ensure we have a valid texture
+            if (btnTexture == null)
+            {
+                btnTexture = GameDatabase.Instance.GetTexture(
+                    "KerbalJournalMod/Icons/Journal", false);
             }
+
+            appLauncherButton = ApplicationLauncher.Instance.AddModApplication(
+                onTrue: ShowWindow,
+                onFalse: HideWindow,
+                onHover: null,
+                onHoverOut: null,
+                onEnable: null,
+                onDisable: null,
+                visibleInScenes: ApplicationLauncher.AppScenes.SPACECENTER | ApplicationLauncher.AppScenes.FLIGHT,
+                texture: btnTexture
+            );
         }
 
         private void ShowWindow() { showGUI = true; }
@@ -405,9 +422,6 @@ namespace KerbalJournal
             GUI.DragWindow(new Rect(0, 0, windowRect.width, 30));
         }
 
-        /// <summary>
-        /// Single row of buttons at bottom, all centered, consistent height
-        /// </summary>
         private void DrawBottomButtons()
         {
             GUILayout.FlexibleSpace();
@@ -429,9 +443,10 @@ namespace KerbalJournal
                         }
                         GUILayout.Space(10);
 
-                        if (GUILayout.Button($"SORT: {sortOptions[sortOption]}", HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
+                        string dateSortLabel = sortAscending ? "SORT: Oldest First" : "SORT: Newest First";
+                        if (GUILayout.Button(dateSortLabel, HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
                         {
-                            sortOption = (sortOption + 1) % sortOptions.Length;
+                            sortAscending = !sortAscending;
                         }
                         GUILayout.Space(10);
 
@@ -442,32 +457,6 @@ namespace KerbalJournal
                             {
                                 appLauncherButton.SetFalse(false);
                             }
-                        }
-                        break;
-                    }
-
-                case JournalUIState.ListJournals:
-                    {
-                        if (GUILayout.Button("Create Journal", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(buttonHeight)))
-                        {
-                            currentState = JournalUIState.Create;
-                            newJournalKerbal = "";
-                            newJournalTitle = "";
-                            newJournalBody = "";
-                        }
-                        GUILayout.Space(10);
-
-                        string dateSortLabel = sortAscending ? "SORT: Oldest First" : "SORT: Newest First";
-                        if (GUILayout.Button(dateSortLabel, HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
-                        {
-                            sortAscending = !sortAscending;
-                        }
-                        GUILayout.Space(10);
-
-                        if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
-                        {
-                            currentState = JournalUIState.Main;
-                            selectedKerbal = null;
                         }
                         break;
                     }
