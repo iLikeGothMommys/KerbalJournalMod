@@ -82,6 +82,12 @@ namespace KerbalJournal
             foreach (var kerbalNode in journalsNode.GetNodes("KERBAL_DATA"))
             {
                 string kerbalName = kerbalNode.GetValue("Name");
+                if (string.IsNullOrEmpty(kerbalName))
+                {
+                    Debug.LogWarning("[KerbalJournal] Encountered Kerbal data without a name.");
+                    continue;
+                }
+
                 var data = new KerbalJournalData
                 {
                     KerbalName = kerbalName,
@@ -93,27 +99,66 @@ namespace KerbalJournal
                     var entry = new KerbalJournalEntry
                     {
                         Date = entryNode.GetValue("Date"),
-                        Index = int.Parse(entryNode.GetValue("Index")),
                         Title = entryNode.GetValue("Title"),
                         Body = entryNode.GetValue("Body")
                     };
 
-                    // Check "IsLocked"
+                    // Safely parse Index
+                    if (entryNode.HasValue("Index"))
+                    {
+                        if (int.TryParse(entryNode.GetValue("Index"), out int parsedIndex))
+                        {
+                            entry.Index = parsedIndex;
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[KerbalJournal] Invalid Index value for Kerbal {kerbalName}. Setting to 1.");
+                            entry.Index = 1;
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[KerbalJournal] Missing Index value for Kerbal {kerbalName}. Setting to 1.");
+                        entry.Index = 1;
+                    }
+
+                    // Safely parse IsLocked
                     if (entryNode.HasValue("IsLocked"))
                     {
-                        bool locked = false;
-                        bool.TryParse(entryNode.GetValue("IsLocked"), out locked);
-                        entry.IsLocked = locked;
+                        if (bool.TryParse(entryNode.GetValue("IsLocked"), out bool locked))
+                        {
+                            entry.IsLocked = locked;
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[KerbalJournal] Invalid IsLocked value for Kerbal {kerbalName}, Journal #{entry.Index}. Setting to false.");
+                            entry.IsLocked = false;
+                        }
                     }
+
                     data.Entries.Add(entry);
                 }
 
-                KerbalJournals[kerbalName] = data;
+                // Ensure unique Kerbal names
+                if (!KerbalJournals.ContainsKey(kerbalName))
+                {
+                    KerbalJournals[kerbalName] = data;
+                }
+                else
+                {
+                    Debug.LogWarning($"[KerbalJournal] Duplicate Kerbal name found: {kerbalName}. Skipping duplicate entries.");
+                }
             }
         }
 
         public void AddJournalEntry(string kerbalName, string title, string body, string date)
         {
+            if (string.IsNullOrEmpty(kerbalName))
+            {
+                Debug.LogError("[KerbalJournal] Attempted to add a journal entry with an empty Kerbal name.");
+                return;
+            }
+
             if (!KerbalJournals.ContainsKey(kerbalName))
             {
                 KerbalJournals[kerbalName] = new KerbalJournalData
@@ -132,6 +177,7 @@ namespace KerbalJournal
                 Body = body
             };
             KerbalJournals[kerbalName].Entries.Add(entry);
+            Debug.Log($"[KerbalJournal] Added Journal #{entry.Index} for Kerbal {kerbalName}.");
         }
 
         public List<KerbalJournalEntry> GetKerbalEntries(string kerbalName)
@@ -143,18 +189,27 @@ namespace KerbalJournal
 
         public void DeleteJournalEntry(string kerbalName, int index)
         {
-            if (!KerbalJournals.ContainsKey(kerbalName)) return;
+            if (!KerbalJournals.ContainsKey(kerbalName))
+            {
+                Debug.LogWarning($"[KerbalJournal] Attempted to delete a journal entry for non-existent Kerbal: {kerbalName}.");
+                return;
+            }
+
             var list = KerbalJournals[kerbalName].Entries;
             var toRemove = list.FirstOrDefault(e => e.Index == index);
             if (toRemove != null)
             {
                 list.Remove(toRemove);
-                list = list.OrderBy(e => e.Index).ToList();
+                // Reindex remaining entries
                 for (int i = 0; i < list.Count; i++)
                 {
                     list[i].Index = i + 1;
                 }
-                KerbalJournals[kerbalName].Entries = list;
+                Debug.Log($"[KerbalJournal] Deleted Journal #{index} for Kerbal {kerbalName}.");
+            }
+            else
+            {
+                Debug.LogWarning($"[KerbalJournal] Attempted to delete non-existent Journal #{index} for Kerbal {kerbalName}.");
             }
         }
     }
@@ -169,7 +224,7 @@ namespace KerbalJournal
         private bool showGUI;
 
         // Window properties
-        private Rect windowRect = new Rect(300, 100, 600, 650);
+        private Rect windowRect = new Rect(300, 100, 600, 700);
         private int windowID = 123456;
 
         private ApplicationLauncherButton appLauncherButton;
@@ -205,23 +260,26 @@ namespace KerbalJournal
         private Vector2 scrollJournalList = Vector2.zero;
         private Vector2 scrollBodyView = Vector2.zero;
         private Vector2 scrollEditBody = Vector2.zero;
-        private Vector2 scrollCreateKerbal = Vector2.zero;
         private Vector2 scrollCreateJournal = Vector2.zero;
 
-        // Sorting
-        private bool sortAscending = true;
-        private int sortOption = 0;
-        private string[] sortOptions = { "A to Z", "Z to A", "Journals (Low-High)", "Journals (High-Low)" };
+        // Sorting for Main Page
+        private int mainSortOption = 0;
+        private readonly string[] mainSortOptions = { "A to Z", "Z to A", "Lowest First", "Highest First" };
 
-        // Table widths
-        private const float tableWidthMain = 560f;
-        private const float tableWidthJournals = 560f;
+        // Sorting for Journal List Page
+        private int listSortOption = 0;
+        private readonly string[] listSortOptions = { "Newest First", "Oldest First" };
 
         // Styles
         private GUIStyle headerStyle;
         private GUIStyle columnHeaderStyle;
         private GUIStyle rowLabelStyle;
         private GUIStyle noJournalStyle;
+        private GUIStyle bodyLabelStyle;
+
+        // Additional styles for center alignment
+        private GUIStyle centerHeaderStyle;      // used for "Number of Journals" header
+        private GUIStyle centerRowLabelStyle;    // used for "Number of Journals" contents
 
         public void Awake()
         {
@@ -236,7 +294,7 @@ namespace KerbalJournal
             // Hook into onGUIApplicationLauncherReady
             GameEvents.onGUIApplicationLauncherReady.Add(InitializeAppLauncherButton);
 
-            // Also hook into scene changes to ensure button persists
+            // Also hook into scene changes to ensure button persists and handle GUI closure
             GameEvents.onGameSceneLoadRequested.Add(OnGameSceneLoadRequested);
         }
 
@@ -264,11 +322,14 @@ namespace KerbalJournal
 
         private void OnGameSceneLoadRequested(GameScenes scene)
         {
-            // If we're changing scenes and our button is gone, try to recreate it
-            if (appLauncherButton == null && ApplicationLauncher.Ready)
+            // Close the GUI when changing scenes
+            if (showGUI)
             {
-                InitializeAppLauncherButton();
+                HideWindow();
             }
+
+            // Reset to Main state to ensure GUI opens at main page next time
+            currentState = JournalUIState.Main;
         }
 
         /// <summary>
@@ -282,8 +343,12 @@ namespace KerbalJournal
             // Ensure we have a valid texture
             if (btnTexture == null)
             {
-                btnTexture = GameDatabase.Instance.GetTexture(
-                    "KerbalJournalMod/Icons/Journal", false);
+                btnTexture = GameDatabase.Instance.GetTexture("KerbalJournalMod/Icons/Journal", false);
+                if (btnTexture == null)
+                {
+                    Debug.LogError("[KerbalJournal] Failed to load button texture at 'KerbalJournalMod/Icons/Journal'. Please ensure the texture exists.");
+                    return;
+                }
             }
 
             appLauncherButton = ApplicationLauncher.Instance.AddModApplication(
@@ -298,8 +363,22 @@ namespace KerbalJournal
             );
         }
 
-        private void ShowWindow() { showGUI = true; }
-        private void HideWindow() { showGUI = false; }
+        private void ShowWindow()
+        {
+            showGUI = true;
+            // Reset to Main state whenever the GUI is opened
+            currentState = JournalUIState.Main;
+        }
+
+        private void HideWindow()
+        {
+            showGUI = false;
+            // Reset the toolbar button state to not pressed
+            if (appLauncherButton != null)
+            {
+                appLauncherButton.SetFalse(false);
+            }
+        }
 
         private void SetupStyles()
         {
@@ -319,7 +398,7 @@ namespace KerbalJournal
                 {
                     fontSize = 16,
                     fontStyle = FontStyle.Bold,
-                    alignment = TextAnchor.MiddleLeft,
+                    alignment = TextAnchor.MiddleLeft, // Left-aligned
                     normal = { textColor = Color.white }
                 };
             }
@@ -330,6 +409,7 @@ namespace KerbalJournal
                     fontSize = 14,
                     fontStyle = FontStyle.Normal,
                     alignment = TextAnchor.MiddleLeft,
+                    wordWrap = true,
                     normal = { textColor = Color.white }
                 };
             }
@@ -340,7 +420,35 @@ namespace KerbalJournal
                     fontSize = 18,
                     fontStyle = FontStyle.Bold,
                     alignment = TextAnchor.MiddleCenter,
+                    wordWrap = true,
                     normal = { textColor = Color.white }
+                };
+            }
+            if (bodyLabelStyle == null)
+            {
+                bodyLabelStyle = new GUIStyle(HighLogic.Skin.label)
+                {
+                    fontSize = 16,
+                    fontStyle = FontStyle.Normal,
+                    alignment = TextAnchor.UpperLeft,
+                    wordWrap = true,
+                    normal = { textColor = Color.white }
+                };
+            }
+
+            // Additional style for center alignment (header & row)
+            if (centerHeaderStyle == null)
+            {
+                centerHeaderStyle = new GUIStyle(columnHeaderStyle)
+                {
+                    alignment = TextAnchor.MiddleCenter
+                };
+            }
+            if (centerRowLabelStyle == null)
+            {
+                centerRowLabelStyle = new GUIStyle(rowLabelStyle)
+                {
+                    alignment = TextAnchor.MiddleCenter
                 };
             }
         }
@@ -348,6 +456,11 @@ namespace KerbalJournal
         public void OnGUI()
         {
             if (!showGUI) return;
+
+            // Ensure the window stays within screen bounds
+            windowRect.x = Mathf.Clamp(windowRect.x, 0, Screen.width - windowRect.width);
+            windowRect.y = Mathf.Clamp(windowRect.y, 0, Screen.height - windowRect.height);
+
             GUI.skin = HighLogic.Skin;
 
             SetupStyles();
@@ -364,30 +477,38 @@ namespace KerbalJournal
             // Confirm Delete
             if (showConfirmDialog)
             {
-                confirmRect.x = windowRect.x + (windowRect.width / 2) - (confirmRect.width / 2);
-                confirmRect.y = windowRect.y + (windowRect.height / 2) - (confirmRect.height / 2);
-                confirmRect = GUILayout.Window(
+                Rect centeredRect = new Rect(
+                    windowRect.x + (windowRect.width / 2) - (confirmRect.width / 2),
+                    windowRect.y + (windowRect.height / 2) - (confirmRect.height / 2),
+                    confirmRect.width,
+                    confirmRect.height
+                );
+
+                GUI.ModalWindow(
                     999999,
-                    confirmRect,
+                    centeredRect,
                     ConfirmDeleteWindow,
                     "Confirm Deletion",
-                    GUILayout.Width(300),
-                    GUILayout.Height(150)
+                    HighLogic.Skin.window
                 );
             }
 
             // Confirm Lock
             if (showLockConfirmDialog)
             {
-                confirmRect.x = windowRect.x + (windowRect.width / 2) - (confirmRect.width / 2);
-                confirmRect.y = windowRect.y + (windowRect.height / 2) - (confirmRect.height / 2);
-                confirmRect = GUILayout.Window(
+                Rect centeredRect = new Rect(
+                    windowRect.x + (windowRect.width / 2) - (confirmRect.width / 2),
+                    windowRect.y + (windowRect.height / 2) - (confirmRect.height / 2),
+                    confirmRect.width,
+                    confirmRect.height
+                );
+
+                GUI.ModalWindow(
                     999998,
-                    confirmRect,
+                    centeredRect,
                     ConfirmLockWindow,
                     "Confirm Lock",
-                    GUILayout.Width(300),
-                    GUILayout.Height(150)
+                    HighLogic.Skin.window
                 );
             }
         }
@@ -434,7 +555,7 @@ namespace KerbalJournal
             {
                 case JournalUIState.Main:
                     {
-                        if (GUILayout.Button("Create Journal", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(buttonHeight)))
+                        if (GUILayout.Button("Create Journal", HighLogic.Skin.button, GUILayout.Width(150), GUILayout.Height(buttonHeight)))
                         {
                             currentState = JournalUIState.Create;
                             newJournalKerbal = "";
@@ -443,20 +564,41 @@ namespace KerbalJournal
                         }
                         GUILayout.Space(10);
 
-                        string dateSortLabel = sortAscending ? "SORT: Oldest First" : "SORT: Newest First";
-                        if (GUILayout.Button(dateSortLabel, HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
+                        string mainSortLabel = $"SORT: {mainSortOptions[mainSortOption]}";
+                        if (GUILayout.Button(mainSortLabel, HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
                         {
-                            sortAscending = !sortAscending;
+                            mainSortOption = (mainSortOption + 1) % mainSortOptions.Length;
                         }
                         GUILayout.Space(10);
 
-                        if (GUILayout.Button("Close", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
+                        if (GUILayout.Button("Close", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(buttonHeight)))
                         {
                             HideWindow();
-                            if (appLauncherButton != null)
-                            {
-                                appLauncherButton.SetFalse(false);
-                            }
+                        }
+                        break;
+                    }
+
+                case JournalUIState.ListJournals:
+                    {
+                        if (GUILayout.Button("Create Journal", HighLogic.Skin.button, GUILayout.Width(150), GUILayout.Height(buttonHeight)))
+                        {
+                            currentState = JournalUIState.Create;
+                            newJournalKerbal = "";
+                            newJournalTitle = "";
+                            newJournalBody = "";
+                        }
+                        GUILayout.Space(10);
+
+                        string listSortLabel = $"SORT: {listSortOptions[listSortOption]}";
+                        if (GUILayout.Button(listSortLabel, HighLogic.Skin.button, GUILayout.Width(200), GUILayout.Height(buttonHeight)))
+                        {
+                            listSortOption = (listSortOption + 1) % listSortOptions.Length;
+                        }
+                        GUILayout.Space(10);
+
+                        if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(buttonHeight)))
+                        {
+                            currentState = JournalUIState.Main;
                         }
                         break;
                     }
@@ -465,7 +607,7 @@ namespace KerbalJournal
                     {
                         if (selectedEntry != null && !selectedEntry.IsLocked)
                         {
-                            if (GUILayout.Button("EDIT", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
+                            if (GUILayout.Button("Edit", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
                             {
                                 editJournalTitle = selectedEntry.Title;
                                 editJournalBody = selectedEntry.Body;
@@ -473,21 +615,21 @@ namespace KerbalJournal
                             }
                             GUILayout.Space(10);
 
-                            if (GUILayout.Button("LOCK JOURNAL", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(buttonHeight)))
+                            if (GUILayout.Button("Lock Journal", HighLogic.Skin.button, GUILayout.Width(150), GUILayout.Height(buttonHeight)))
                             {
                                 showLockConfirmDialog = true;
                             }
                             GUILayout.Space(10);
                         }
 
-                        if (GUILayout.Button("DELETE", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
+                        if (GUILayout.Button("Delete", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
                         {
                             showConfirmDialog = true;
                             confirmDeleteIndex = (selectedEntry != null) ? selectedEntry.Index : -1;
                         }
                         GUILayout.Space(10);
 
-                        if (GUILayout.Button("RETURN", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
+                        if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
                         {
                             currentState = JournalUIState.ListJournals;
                         }
@@ -496,10 +638,22 @@ namespace KerbalJournal
 
                 case JournalUIState.Edit:
                     {
-                        if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(buttonHeight)))
+                        GUILayout.BeginHorizontal();
+                        GUILayout.FlexibleSpace();
+
+                        if (GUILayout.Button("Save", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(30)))
+                        {
+                            SaveEditedJournal();
+                        }
+                        GUILayout.Space(10);
+
+                        if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(30)))
                         {
                             currentState = JournalUIState.View;
                         }
+
+                        GUILayout.FlexibleSpace();
+                        GUILayout.EndHorizontal();
                         break;
                     }
 
@@ -507,7 +661,7 @@ namespace KerbalJournal
                     {
                         if (GUILayout.Button("Save Journal", HighLogic.Skin.button, GUILayout.Width(150), GUILayout.Height(buttonHeight)))
                         {
-                            if (!string.IsNullOrEmpty(newJournalTitle) && !string.IsNullOrEmpty(newJournalBody))
+                            if (!string.IsNullOrEmpty(newJournalTitle) && !string.IsNullOrEmpty(newJournalBody) && !string.IsNullOrEmpty(newJournalKerbal))
                             {
                                 if (JournalScenario.Instance != null)
                                 {
@@ -526,7 +680,7 @@ namespace KerbalJournal
                             }
                             else
                             {
-                                Debug.LogWarning("Subject and Body cannot be empty.");
+                                Debug.LogWarning("[KerbalJournal] Subject, Body, and Kerbal must not be empty.");
                             }
                         }
                         GUILayout.Space(10);
@@ -557,7 +711,7 @@ namespace KerbalJournal
                 GUILayout.FlexibleSpace();
                 GUILayout.BeginHorizontal();
                 GUILayout.FlexibleSpace();
-                GUILayout.Label("No journals have been found, please create a journal", noJournalStyle, GUILayout.Width(500));
+                GUILayout.Label("No journals have been found, please create a journal.", noJournalStyle, GUILayout.Width(500));
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
                 GUILayout.FlexibleSpace();
@@ -565,32 +719,56 @@ namespace KerbalJournal
                 return;
             }
 
+            // ADDED HEADER: Display "Kerbal Journal Management System" at the top
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            GUILayout.Label("Kerbal Journal Management System", headerStyle, GUILayout.Height(40)); // ADDED HEADER
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(10); // Added spacing after header
+
+            // Sort
             List<KerbalJournalData> sortedKerbals = JournalScenario.Instance.KerbalJournals.Values.ToList();
-            switch (sortOption)
+            switch (mainSortOption)
             {
-                case 0: sortedKerbals = sortedKerbals.OrderBy(k => k.KerbalName).ToList(); break;
-                case 1: sortedKerbals = sortedKerbals.OrderByDescending(k => k.KerbalName).ToList(); break;
-                case 2: sortedKerbals = sortedKerbals.OrderBy(k => k.Entries.Count).ToList(); break;
-                case 3: sortedKerbals = sortedKerbals.OrderByDescending(k => k.Entries.Count).ToList(); break;
+                case 0: // A to Z
+                    sortedKerbals = sortedKerbals.OrderBy(k => k.KerbalName).ToList();
+                    break;
+                case 1: // Z to A
+                    sortedKerbals = sortedKerbals.OrderByDescending(k => k.KerbalName).ToList();
+                    break;
+                case 2: // Journals (Lowest First)
+                    sortedKerbals = sortedKerbals.OrderBy(k => k.Entries.Count).ToList();
+                    break;
+                case 3: // Journals (Highest First)
+                    sortedKerbals = sortedKerbals.OrderByDescending(k => k.Entries.Count).ToList();
+                    break;
             }
 
-            scrollKerbalList = GUILayout.BeginScrollView(scrollKerbalList, GUILayout.Height(400));
-            GUILayout.BeginHorizontal(GUILayout.ExpandWidth(true));
-            GUILayout.Label("Name", columnHeaderStyle, GUILayout.Width(250));
-            GUILayout.Label("Journals", columnHeaderStyle, GUILayout.Width(100));
+            // Single scroll container for column headers + rows
+            scrollKerbalList = GUILayout.BeginScrollView(scrollKerbalList, GUILayout.Width(580), GUILayout.Height(500));
+
+            // Column Headers (No background)
+            GUILayout.BeginHorizontal(); // no background
+            GUILayout.Label("Kerbal Name", columnHeaderStyle, GUILayout.Width(150));
+            GUILayout.Label("Number of Journals", columnHeaderStyle, GUILayout.Width(150));
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
             GUILayout.Space(5);
 
+            // Rows, with box backgrounds
             foreach (var kd in sortedKerbals)
             {
                 if (kd.Entries.Count > 0)
                 {
                     GUILayout.BeginHorizontal(HighLogic.Skin.box, GUILayout.ExpandWidth(true));
-                    GUILayout.Label(kd.KerbalName, rowLabelStyle, GUILayout.Width(250));
-                    GUILayout.Label(kd.Entries.Count.ToString(), rowLabelStyle, GUILayout.Width(100));
+                    GUILayout.Label(kd.KerbalName, rowLabelStyle, GUILayout.Width(150));
+                    GUILayout.Label(kd.Entries.Count.ToString(), rowLabelStyle, GUILayout.Width(150));
 
+                    GUILayout.Space(3);
                     GUILayout.FlexibleSpace();
+
+                    // "View Journals" button
                     if (GUILayout.Button("View Journals", HighLogic.Skin.button, GUILayout.Width(120), GUILayout.Height(25)))
                     {
                         selectedKerbal = kd.KerbalName;
@@ -601,6 +779,7 @@ namespace KerbalJournal
                     GUILayout.Space(5);
                 }
             }
+
             GUILayout.EndScrollView();
         }
 
@@ -622,30 +801,56 @@ namespace KerbalJournal
             var entries = JournalScenario.Instance.GetKerbalEntries(selectedKerbal);
             if (entries == null || entries.Count == 0)
             {
-                GUILayout.Label("No entries for this Kerbal yet.", HighLogic.Skin.label);
+                GUILayout.BeginVertical();
+                GUILayout.FlexibleSpace();
+                GUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                GUILayout.Label("No entries for this Kerbal yet.", rowLabelStyle, GUILayout.Width(500));
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
+                GUILayout.Space(20);
+
+                GUILayout.BeginHorizontal();
+                GUILayout.FlexibleSpace();
+                if (GUILayout.Button("Return", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(30)))
+                {
+                    currentState = JournalUIState.Main;
+                }
+                GUILayout.FlexibleSpace();
+                GUILayout.EndHorizontal();
+
+                GUILayout.FlexibleSpace();
+                GUILayout.EndVertical();
                 return;
             }
 
+            // Sort
             List<KerbalJournalEntry> sortedEntries =
-                sortAscending
-                ? entries.OrderBy(e => e.Index).ToList()
-                : entries.OrderByDescending(e => e.Index).ToList();
+                (listSortOption == 0)
+                ? entries.OrderByDescending(e => e.Index).ToList() // Newest First
+                : entries.OrderBy(e => e.Index).ToList();          // Oldest First
 
-            scrollJournalList = GUILayout.BeginScrollView(scrollJournalList, GUILayout.Height(400));
-            GUILayout.BeginHorizontal(GUILayout.ExpandWidth(true));
+            // ADDED WIDTH(...) to match the MainPage container above
+            scrollJournalList = GUILayout.BeginScrollView(scrollJournalList, GUILayout.Width(580), GUILayout.Height(500));
+
+            // Column Headers
+            GUILayout.BeginHorizontal();
             GUILayout.Label("Date", columnHeaderStyle, GUILayout.Width(140));
-            GUILayout.Label("Journal #", columnHeaderStyle, GUILayout.Width(80));
+            GUILayout.Label("Journal #", columnHeaderStyle, GUILayout.Width(100));
             GUILayout.Label("Title", columnHeaderStyle, GUILayout.Width(200));
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
             GUILayout.Space(5);
 
+            // Rows
             foreach (var entry in sortedEntries)
             {
                 GUILayout.BeginHorizontal(HighLogic.Skin.box, GUILayout.ExpandWidth(true));
+
                 string displayDate = ConvertLegacyDate(entry.Date);
                 GUILayout.Label(displayDate, rowLabelStyle, GUILayout.Width(140));
-                GUILayout.Label(entry.Index.ToString("D3"), rowLabelStyle, GUILayout.Width(80));
+
+                GUILayout.Label(entry.Index.ToString("D3"), rowLabelStyle, GUILayout.Width(100));
                 GUILayout.Label(entry.Title, rowLabelStyle, GUILayout.Width(200));
 
                 GUILayout.FlexibleSpace();
@@ -654,10 +859,10 @@ namespace KerbalJournal
                     selectedEntry = entry;
                     currentState = JournalUIState.View;
                 }
-
                 GUILayout.EndHorizontal();
                 GUILayout.Space(5);
             }
+
             GUILayout.EndScrollView();
         }
 
@@ -669,7 +874,6 @@ namespace KerbalJournal
                 return;
             }
 
-            // e.g. "Valentina Kerman LOG 003"
             string headerText = $"{selectedKerbal} LOG {selectedEntry.Index:D3}";
             GUILayout.BeginHorizontal();
             GUILayout.FlexibleSpace();
@@ -678,7 +882,6 @@ namespace KerbalJournal
             GUILayout.EndHorizontal();
             GUILayout.Space(10);
 
-            // "Crew Member", "Date", "Subject"
             GUILayout.Label($"Crew Member: {selectedKerbal}", columnHeaderStyle);
             string displayDate = ConvertLegacyDate(selectedEntry.Date);
             GUILayout.Label($"Date: {displayDate}", columnHeaderStyle);
@@ -686,8 +889,8 @@ namespace KerbalJournal
 
             GUILayout.Space(10);
 
-            scrollBodyView = GUILayout.BeginScrollView(scrollBodyView, GUILayout.Height(300));
-            GUILayout.Label(selectedEntry.Body, rowLabelStyle);
+            scrollBodyView = GUILayout.BeginScrollView(scrollBodyView, GUILayout.Height(320));
+            GUILayout.Label(selectedEntry.Body, bodyLabelStyle);
             GUILayout.EndScrollView();
 
             GUILayout.Space(10);
@@ -709,12 +912,24 @@ namespace KerbalJournal
             GUILayout.Space(10);
 
             GUILayout.Label("Subject:", columnHeaderStyle);
-            editJournalTitle = GUILayout.TextField(editJournalTitle, HighLogic.Skin.textField, GUILayout.Height(30));
+
+            string tempEditTitle = GUILayout.TextField(editJournalTitle, HighLogic.Skin.textField, GUILayout.Height(30));
+            if (tempEditTitle.Length <= 65)
+            {
+                editJournalTitle = tempEditTitle;
+            }
+            else
+            {
+                editJournalTitle = tempEditTitle.Substring(0, 65);
+            }
+            GUILayout.Label($"Characters remaining: {65 - editJournalTitle.Length}", rowLabelStyle);
+
             GUILayout.Space(10);
 
             GUILayout.Label("Body:", columnHeaderStyle);
-            scrollEditBody = GUILayout.BeginScrollView(scrollEditBody, GUILayout.Height(200));
-            editJournalBody = GUILayout.TextArea(editJournalBody, HighLogic.Skin.textArea, GUILayout.Height(200));
+
+            scrollEditBody = GUILayout.BeginScrollView(scrollEditBody, GUILayout.Height(320));
+            editJournalBody = GUILayout.TextArea(editJournalBody, HighLogic.Skin.textArea, GUILayout.ExpandHeight(true));
             GUILayout.EndScrollView();
 
             GUILayout.Space(10);
@@ -742,7 +957,6 @@ namespace KerbalJournal
                 }
                 else
                 {
-                    // Left-aligned row, wrapping after 4
                     int buttonsPerRow = 4;
                     int count = 0;
                     GUILayout.BeginHorizontal();
@@ -783,17 +997,27 @@ namespace KerbalJournal
                 GUILayout.Label("Selected Kerbal: " + newJournalKerbal, rowLabelStyle);
                 GUILayout.Space(10);
 
-                // "Subject"
                 GUILayout.Label("Subject:", columnHeaderStyle);
-                newJournalTitle = GUILayout.TextField(newJournalTitle, HighLogic.Skin.textField, GUILayout.Height(30));
+                string tempTitle = GUILayout.TextField(newJournalTitle, HighLogic.Skin.textField, GUILayout.Height(30));
+                if (tempTitle.Length <= 65)
+                {
+                    newJournalTitle = tempTitle;
+                }
+                else
+                {
+                    newJournalTitle = tempTitle.Substring(0, 65);
+                }
+                GUILayout.Label($"Characters remaining: {65 - newJournalTitle.Length}", rowLabelStyle);
+
                 GUILayout.Space(10);
 
                 GUILayout.Label("Journal Body:", columnHeaderStyle);
-                scrollCreateJournal = GUILayout.BeginScrollView(scrollCreateJournal, GUILayout.Height(150));
-                newJournalBody = GUILayout.TextArea(newJournalBody, HighLogic.Skin.textArea, GUILayout.Height(150));
-                GUILayout.EndScrollView();
-                GUILayout.Space(10);
 
+                scrollCreateJournal = GUILayout.BeginScrollView(scrollCreateJournal, GUILayout.Height(180));
+                newJournalBody = GUILayout.TextArea(newJournalBody, HighLogic.Skin.textArea, GUILayout.ExpandHeight(true));
+                GUILayout.EndScrollView();
+
+                GUILayout.Space(10);
                 GUILayout.EndVertical();
             }
         }
@@ -813,7 +1037,7 @@ namespace KerbalJournal
 
             if (GUILayout.Button("Yes", HighLogic.Skin.button, GUILayout.Width(100), GUILayout.Height(30)))
             {
-                if (JournalScenario.Instance != null && selectedKerbal != null && confirmDeleteIndex > 0)
+                if (JournalScenario.Instance != null && !string.IsNullOrEmpty(selectedKerbal) && confirmDeleteIndex > 0)
                 {
                     JournalScenario.Instance.DeleteJournalEntry(selectedKerbal, confirmDeleteIndex);
                 }
@@ -843,6 +1067,7 @@ namespace KerbalJournal
                 if (selectedEntry != null)
                 {
                     selectedEntry.IsLocked = true;
+                    Debug.Log($"[KerbalJournal] Journal #{selectedEntry.Index} for Kerbal {selectedKerbal} has been locked.");
                 }
                 showLockConfirmDialog = false;
             }
@@ -890,8 +1115,16 @@ namespace KerbalJournal
                 {
                     string yearPart = parts[0].Trim();
                     string dayPart = parts[1].Trim();
-                    string yearNumber = yearPart.Split(' ')[1];
-                    string dayNumber = dayPart.Split(' ')[1];
+                    string yearNumber = "";
+                    string dayNumber = "";
+
+                    var yearSplit = yearPart.Split(' ');
+                    if (yearSplit.Length >= 2)
+                        yearNumber = yearSplit[1];
+                    var daySplit = dayPart.Split(' ');
+                    if (daySplit.Length >= 2)
+                        dayNumber = daySplit[1];
+
                     dateString = $"Year {yearNumber}, Day {dayNumber}";
                 }
                 else
@@ -902,6 +1135,18 @@ namespace KerbalJournal
             return dateString;
         }
 
+        private void SaveEditedJournal()
+        {
+            if (selectedEntry != null)
+            {
+                selectedEntry.Title = editJournalTitle;
+                selectedEntry.Body = editJournalBody;
+                Debug.Log($"[KerbalJournal] Journal #{selectedEntry.Index} for Kerbal {selectedKerbal} has been edited.");
+            }
+            currentState = JournalUIState.View;
+        }
+
         #endregion
     }
 }
+
